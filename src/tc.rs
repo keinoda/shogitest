@@ -26,10 +26,17 @@ pub enum TimeControl {
 
 impl TimeControl {
     pub fn parse(s: &str) -> Option<TimeControl> {
-        None.or_else(|| Self::try_parse_fischer(s))
+        None.or_else(|| Self::try_parse_infinite(s))
+            .or_else(|| Self::try_parse_fischer(s))
             .or_else(|| Self::try_parse_byoyomi(s))
             .or_else(|| Self::try_parse_movetime(s))
             .or_else(|| Self::try_parse_nodes(s))
+    }
+
+    fn try_parse_infinite(s: &str) -> Option<TimeControl> {
+        // Accepted for compatibility with runners where fixed-nodes games
+        // are expressed as "tc=inf nodes=N"
+        matches!(s, "inf" | "infinite" | "∞").then_some(TimeControl::None)
     }
 
     fn try_parse_fischer(s: &str) -> Option<TimeControl> {

@@ -111,8 +111,10 @@ impl StatsWrapper {
         }
     }
     pub fn print_head_to_head(&self) {
-        let wdl = self.all_wdl_for(1);
-        let penta = self.all_penta_for(1);
+        // Report from the FIRST engine's perspective, matching the
+        // "A vs B" header: a positive Elo means A is stronger.
+        let wdl = self.all_wdl_for(0);
+        let penta = self.all_penta_for(0);
         let (lelo, lelo_diff) = penta.logistic_elo();
         let (nelo, nelo_diff) = penta.normalized_elo();
 
@@ -139,8 +141,8 @@ impl StatsWrapper {
             .unwrap_or("null".to_string());
 
         println!(
-            "Results of {} vs {} ({tc}, {threads}, {hash}, {book}):",
-            self.engine_names[0], self.engine_names[1]
+            "Results of {} vs {} (score for {}) ({tc}, {threads}, {hash}, {book}):",
+            self.engine_names[0], self.engine_names[1], self.engine_names[0]
         );
         println!("Elo: {lelo:.2} +/- {lelo_diff:.2}, nElo: {nelo:.2} +/- {nelo_diff:.2}");
         println!(
@@ -219,7 +221,8 @@ impl StatsWrapper {
         if let Some(sprt) = self.sprt
             && !self.should_terminate
         {
-            let penta = self.all_penta_for(1);
+            // SPRT tests the FIRST engine, as in cutechess/fastchess
+            let penta = self.all_penta_for(0);
             self.should_terminate = sprt.should_terminate(penta);
         }
     }

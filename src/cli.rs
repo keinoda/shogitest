@@ -187,18 +187,18 @@ fn parse_engine_option(engine: &mut EngineOptions, name: &str, value: &str) -> b
         }
         "tc" => {
             if engine.time_control != tc::TimeControl::None {
-                eprint!("Warning; Specifying multiple time controls!");
+                eprintln!("Warning; Specifying multiple time controls!");
             }
             if let Some(tc) = tc::TimeControl::parse(value) {
                 engine.time_control = tc;
             } else {
-                eprint!("Invalid time control specification {value}");
+                eprintln!("Invalid time control specification {value}");
                 return false;
             }
         }
         "st" => {
             if engine.time_control != tc::TimeControl::None {
-                eprint!("Warning; Specifying multiple time controls!");
+                eprintln!("Warning; Specifying multiple time controls!");
             }
             match value.parse::<u64>() {
                 Ok(value) => {
@@ -212,7 +212,7 @@ fn parse_engine_option(engine: &mut EngineOptions, name: &str, value: &str) -> b
         }
         "nodes" => {
             if engine.time_control != tc::TimeControl::None {
-                eprint!("Warning; Specifying multiple time controls!");
+                eprintln!("Warning; Specifying multiple time controls!");
             }
             match value.parse::<u64>() {
                 Ok(value) => engine.time_control = tc::TimeControl::Nodes(value),
@@ -268,7 +268,7 @@ pub fn parse() -> Option<CliOptions> {
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "-version" | "--version" => {
-                println!("Shogitest version 0.1.1");
+                println!("Shogitest version 0.1.2");
                 return None;
             }
 
@@ -348,14 +348,14 @@ pub fn parse() -> Option<CliOptions> {
                         "start" => {
                             if let Ok(value) = value.parse::<usize>() {
                                 if value == 0 {
-                                    eprint!(
+                                    eprintln!(
                                         "invalid openings start index {value} (must be bigger than zero)"
                                     );
                                     return None;
                                 }
                                 book.start_index = value;
                             } else {
-                                eprint!(
+                                eprintln!(
                                     "invalid openings start index {value} (must be unsigned integer)"
                                 );
                                 return None;
@@ -381,12 +381,12 @@ pub fn parse() -> Option<CliOptions> {
                 let Some(option) = it.next() else { break };
                 if let Ok(option) = option.parse::<u64>() {
                     if option == 0 {
-                        eprint!("invalid concurrency value {option} (must be bigger than zero)");
+                        eprintln!("invalid concurrency value {option} (must be bigger than zero)");
                         return None;
                     }
                     options.concurrency = option;
                 } else {
-                    eprint!("invalid concurrency value {option} (must be unsigned integer)");
+                    eprintln!("invalid concurrency value {option} (must be unsigned integer)");
                     return None;
                 }
             }
@@ -396,7 +396,7 @@ pub fn parse() -> Option<CliOptions> {
                 if let Ok(option) = option.parse::<u64>() {
                     options.rand_seed = Some(option);
                 } else {
-                    eprint!("invalid random seed {option} (must be unsigned integer)");
+                    eprintln!("invalid random seed {option} (must be unsigned integer)");
                     return None;
                 }
             }
@@ -405,12 +405,12 @@ pub fn parse() -> Option<CliOptions> {
                 let Some(option) = it.next() else { break };
                 if let Ok(option) = option.parse::<u64>() {
                     if option == 0 {
-                        eprint!("invalid games value {option} (must be bigger than zero)");
+                        eprintln!("invalid games value {option} (must be bigger than zero)");
                         return None;
                     }
                     options.games = Some(option);
                 } else {
-                    eprint!("invalid games value {option} (must be unsigned integer)");
+                    eprintln!("invalid games value {option} (must be unsigned integer)");
                     return None;
                 }
             }
@@ -419,21 +419,21 @@ pub fn parse() -> Option<CliOptions> {
                 let Some(option) = it.next() else { break };
                 if let Ok(option) = option.parse::<u64>() {
                     if option == 0 {
-                        eprint!("invalid rounds value {option} (must be bigger than zero)");
+                        eprintln!("invalid rounds value {option} (must be bigger than zero)");
                         return None;
                     }
                     if option % 2 != 0 {
-                        eprint!("odd value for rounds {option}! expected an even value.");
+                        eprintln!("odd value for rounds {option}! expected an even value.");
                         return None;
                     }
                     if option > 2 {
-                        eprint!(
+                        eprintln!(
                             "Warning; There is often no good reason for a round to have more than two games. (Current value: {option})"
                         );
                     }
                     options.rounds = option;
                 } else {
-                    eprint!("invalid rounds value {option} (must be unsigned integer)");
+                    eprintln!("invalid rounds value {option} (must be unsigned integer)");
                     return None;
                 }
             }
@@ -504,7 +504,7 @@ pub fn parse() -> Option<CliOptions> {
                         Some(value)
                     }
                     _ => {
-                        eprint!(
+                        eprintln!(
                             "invalid maxmoves value {value} (must be non-zero unsigned integer)"
                         );
                         return None;
@@ -608,7 +608,7 @@ pub fn parse() -> Option<CliOptions> {
                 if let Ok(option) = option.parse::<u64>() {
                     options.report_interval = if option == 0 { None } else { Some(option) };
                 } else {
-                    eprint!("invalid games value {option} (must be unsigned integer)");
+                    eprintln!("invalid games value {option} (must be unsigned integer)");
                     return None;
                 }
             }
