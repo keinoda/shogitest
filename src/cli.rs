@@ -113,10 +113,18 @@ pub struct CliOptions {
 
 impl CliOptions {
     pub fn engine_names(&self) -> Vec<String> {
-        self.engines
+        let mut names: Vec<String> = self
+            .engines
             .iter()
             .map(|e| e.builder.init().unwrap().name().to_string())
-            .collect()
+            .collect();
+        // 2エンジン対戦では登録名に -dev / -base を付けて向きを明示する
+        // (1番目 = dev = 検証対象、2番目 = base = 基準)。
+        if names.len() == 2 {
+            names[0].push_str("-dev");
+            names[1].push_str("-base");
+        }
+        names
     }
 }
 

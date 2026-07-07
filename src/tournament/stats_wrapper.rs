@@ -111,8 +111,9 @@ impl StatsWrapper {
         }
     }
     pub fn print_head_to_head(&self) {
-        let wdl = self.all_wdl_for(1);
-        let penta = self.all_penta_for(1);
+        // 表示・SPRT とも 1 番目のエンジン (dev 側) 視点に統一する。
+        let wdl = self.all_wdl_for(0);
+        let penta = self.all_penta_for(0);
         let (lelo, lelo_diff) = penta.logistic_elo();
         let (nelo, nelo_diff) = penta.normalized_elo();
 
@@ -139,10 +140,26 @@ impl StatsWrapper {
             .unwrap_or("null".to_string());
 
         println!(
-            "Results of {} vs {} ({tc}, {threads}, {hash}, {book}):",
-            self.engine_names[0], self.engine_names[1]
+            "Results of {} vs {} (score for {}) ({tc}, {threads}, {hash}, {book}):",
+            self.engine_names[0], self.engine_names[1], self.engine_names[0]
         );
         println!("Elo: {lelo:.2} +/- {lelo_diff:.2}, nElo: {nelo:.2} +/- {nelo_diff:.2}");
+        // どちらがどれだけ強いかを平文で明示する。
+        let (dev, base) = (&self.engine_names[0], &self.engine_names[1]);
+        if lelo.is_finite() && lelo_diff.is_finite() && lelo_diff > 0.0 {
+            if lelo - lelo_diff > 0.0 {
+                println!(">>> {dev} is STRONGER than {base} by {lelo:.1} +/- {lelo_diff:.1} Elo (95% CI)");
+            } else if lelo + lelo_diff < 0.0 {
+                println!(
+                    ">>> {base} is STRONGER than {dev} by {:.1} +/- {lelo_diff:.1} Elo (95% CI)",
+                    -lelo
+                );
+            } else {
+                println!(
+                    ">>> no significant difference yet: {dev} is {lelo:+.1} +/- {lelo_diff:.1} Elo vs {base}"
+                );
+            }
+        }
         println!(
             "Games: {}, Wins: {}, Draws: {}, Losses: {} (Score: {:.2}%)",
             wdl.game_count(),
@@ -164,6 +181,16 @@ impl StatsWrapper {
             println!(
                 "LLR: {llr:.2} ({llr_lower_bound:.2}, {llr_upper_bound:.2}) [{nelo_lower_bound:.2}, {nelo_upper_bound:.2}]"
             );
+            let (dev, base) = (&self.engine_names[0], &self.engine_names[1]);
+            if llr >= llr_upper_bound {
+                println!(
+                    ">>> SPRT: H1 accepted — {dev} is stronger than {base} (nElo diff >= {nelo_upper_bound:.2})"
+                );
+            } else if llr <= llr_lower_bound {
+                println!(
+                    ">>> SPRT: H0 accepted — {dev} shows no sufficient gain over {base} (nElo diff <= {nelo_lower_bound:.2})"
+                );
+            }
         }
     }
     pub fn print_table(&self) {
@@ -219,7 +246,8 @@ impl StatsWrapper {
         if let Some(sprt) = self.sprt
             && !self.should_terminate
         {
-            let penta = self.all_penta_for(1);
+            // SPRT も表示と同じく 1 番目のエンジン (dev 側) 視点で判定する。
+            let penta = self.all_penta_for(0);
             self.should_terminate = sprt.should_terminate(penta);
         }
     }
