@@ -93,7 +93,8 @@ impl EngineBuilder {
         engine.write_line("usi")?;
 
         let mut usi_name: Option<String> = None;
-        match engine.read_with_timeout(Some(5 * Duration::SECOND), |line| {
+        // 多数のエンジンを同時起動すると fork/ロードの競合で応答が遅れるため余裕を持たせる
+        match engine.read_with_timeout(Some(30 * Duration::SECOND), |line| {
             let mut it = line.split_whitespace();
             match it.next() {
                 Some("usiok") => ReadState::Stop,
@@ -206,7 +207,9 @@ impl Engine {
     pub fn isready(&mut self) -> Result<()> {
         self.write_line("isready")?;
         self.flush()?;
-        match self.read_with_timeout(Some(5 * Duration::SECOND), |line| {
+        // isready では置換表クリア (USI_Hash が大きいと数十秒) と評価関数ロードが走る。
+        // 大 Hash × 高並列の同時起動でも間に合うよう大きめに取る。
+        match self.read_with_timeout(Some(300 * Duration::SECOND), |line| {
             if line.trim().eq_ignore_ascii_case("readyok") {
                 ReadState::Stop
             } else {
