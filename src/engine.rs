@@ -56,13 +56,24 @@ pub struct EngineBuilder {
 
 impl EngineBuilder {
     pub fn init(&self) -> Result<Engine> {
-        let cmd = if self.dir.is_empty() {
-            Path::new(&self.cmd).to_path_buf()
+        // dir= はエンジンの作業ディレクトリでもある (cutechess 系の慣習)。
+        // これを設定しないと eval_options.txt 等の相対パスが
+        // shogitest 側の CWD 基準で解決されて壊れる。
+        let dir = if self.dir.is_empty() {
+            None
         } else {
-            Path::new(&self.dir).join(&self.cmd)
+            Some(std::fs::canonicalize(&self.dir)?)
+        };
+        let cmd = match &dir {
+            None => Path::new(&self.cmd).to_path_buf(),
+            Some(dir) => dir.join(&self.cmd),
         };
 
-        let mut child = Command::new(&cmd)
+        let mut command = Command::new(&cmd);
+        if let Some(dir) = &dir {
+            command.current_dir(dir);
+        }
+        let mut child = command
             .stdout(Stdio::piped())
             .stdin(Stdio::piped())
             .spawn()?;
