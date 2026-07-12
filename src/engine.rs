@@ -1,8 +1,8 @@
 use crate::shogi;
 use log::{error, info, trace};
 use std::{
-    path::Path,
     io::{Result, Write},
+    path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     time::Duration,
 };
@@ -35,6 +35,7 @@ pub struct MoveRecord {
     pub stm: Option<shogi::Color>,
     pub m: shogi::Move,
     pub mstr: String,
+    pub ponder: Option<shogi::Move>,
     pub score: Score,
     pub depth: u32,
     pub seldepth: u32,
@@ -240,91 +241,7 @@ impl Engine {
             stm: Some(stm),
             ..MoveRecord::default()
         };
-        match self.read_with_timeout(timeout, |line| {
-            let mut it = line.split_ascii_whitespace();
-            match it.next() {
-                Some("info") => {
-                    while let Some(tok) = it.next() {
-                        match tok {
-                            "string" => break,
-                            "depth" => {
-                                if let Some(value) = it.next()
-                                    && let Ok(value) = value.parse::<u32>()
-                                {
-                                    mr.depth = value;
-                                }
-                            }
-                            "seldepth" => {
-                                if let Some(value) = it.next()
-                                    && let Ok(value) = value.parse::<u32>()
-                                {
-                                    mr.seldepth = value;
-                                }
-                            }
-                            "nodes" => {
-                                if let Some(value) = it.next()
-                                    && let Ok(value) = value.parse::<u64>()
-                                {
-                                    mr.nodes = value;
-                                }
-                            }
-                            "nps" => {
-                                if let Some(value) = it.next()
-                                    && let Ok(value) = value.parse::<u64>()
-                                {
-                                    mr.nps = value;
-                                }
-                            }
-                            "time" => {
-                                if let Some(value) = it.next()
-                                    && let Ok(value) = value.parse::<u64>()
-                                {
-                                    mr.engine_time = value;
-                                }
-                            }
-                            "hashfull" => {
-                                if let Some(value) = it.next()
-                                    && let Ok(value) = value.parse::<u32>()
-                                {
-                                    mr.hashfull = value;
-                                }
-                            }
-                            "score" => match it.next() {
-                                Some(x) => match x {
-                                    "cp" => {
-                                        if let Some(value) = it.next()
-                                            && let Ok(value) = value.parse::<i32>()
-                                        {
-                                            mr.score = Score::Cp(value);
-                                        }
-                                    }
-                                    "mate" => {
-                                        if let Some(value) = it.next()
-                                            && let Ok(value) = value.parse::<i32>()
-                                        {
-                                            mr.score = Score::Mate(value);
-                                        }
-                                    }
-                                    _ => continue,
-                                },
-                                None => continue,
-                            },
-                            _ => continue,
-                        }
-                    }
-                    ReadState::Continue
-                }
-                Some("bestmove") => {
-                    let mstr = it.next().unwrap_or("");
-                    mr.mstr = mstr.to_string();
-                    if let Some(m) = shogi::Move::parse(mstr) {
-                        mr.m = m;
-                    }
-                    ReadState::Stop
-                }
-                _ => ReadState::Continue,
-            }
-        }) {
+        match self.read_with_timeout(timeout, |line| parse_search_output_line(&line, &mut mr)) {
             EngineResult::Ok(()) => EngineResult::Ok(mr),
             EngineResult::Err(err) => EngineResult::Err(err),
             EngineResult::Timeout => EngineResult::Timeout,
@@ -354,7 +271,8 @@ impl Engine {
             fds[0].fd = self.stdout.as_raw_fd();
             fds[0].events = libc::POLLIN;
 
-            let ready_count = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as u64, timeout_ms) };
+            let ready_count =
+                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
             if ready_count < 0 {
                 let err = std::io::Error::last_os_error();
                 match err.raw_os_error() {
@@ -513,5 +431,123 @@ impl Engine {
         }
 
         Ok(ReadState::Continue)
+    }
+}
+
+fn parse_search_output_line(line: &str, mr: &mut MoveRecord) -> ReadState {
+    let mut it = line.split_ascii_whitespace();
+    match it.next() {
+        Some("info") => {
+            while let Some(tok) = it.next() {
+                match tok {
+                    "string" => break,
+                    "depth" => {
+                        if let Some(value) = it.next()
+                            && let Ok(value) = value.parse::<u32>()
+                        {
+                            mr.depth = value;
+                        }
+                    }
+                    "seldepth" => {
+                        if let Some(value) = it.next()
+                            && let Ok(value) = value.parse::<u32>()
+                        {
+                            mr.seldepth = value;
+                        }
+                    }
+                    "nodes" => {
+                        if let Some(value) = it.next()
+                            && let Ok(value) = value.parse::<u64>()
+                        {
+                            mr.nodes = value;
+                        }
+                    }
+                    "nps" => {
+                        if let Some(value) = it.next()
+                            && let Ok(value) = value.parse::<u64>()
+                        {
+                            mr.nps = value;
+                        }
+                    }
+                    "time" => {
+                        if let Some(value) = it.next()
+                            && let Ok(value) = value.parse::<u64>()
+                        {
+                            mr.engine_time = value;
+                        }
+                    }
+                    "hashfull" => {
+                        if let Some(value) = it.next()
+                            && let Ok(value) = value.parse::<u32>()
+                        {
+                            mr.hashfull = value;
+                        }
+                    }
+                    "score" => match it.next() {
+                        Some("cp") => {
+                            if let Some(value) = it.next()
+                                && let Ok(value) = value.parse::<i32>()
+                            {
+                                mr.score = Score::Cp(value);
+                            }
+                        }
+                        Some("mate") => {
+                            if let Some(value) = it.next()
+                                && let Ok(value) = value.parse::<i32>()
+                            {
+                                mr.score = Score::Mate(value);
+                            }
+                        }
+                        _ => continue,
+                    },
+                    _ => continue,
+                }
+            }
+            ReadState::Continue
+        }
+        Some("bestmove") => {
+            let mstr = it.next().unwrap_or("");
+            mr.mstr = mstr.to_string();
+            if let Some(m) = shogi::Move::parse(mstr) {
+                mr.m = m;
+            }
+
+            while let Some(token) = it.next() {
+                if token == "ponder" {
+                    mr.ponder = it.next().and_then(shogi::Move::parse).filter(|m| {
+                        matches!(m, shogi::Move::Normal { .. } | shogi::Move::Drop(_, _))
+                    });
+                    break;
+                }
+            }
+            ReadState::Stop
+        }
+        _ => ReadState::Continue,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_bestmove_and_ponder_move() {
+        let mut record = MoveRecord::default();
+
+        assert!(matches!(
+            parse_search_output_line("bestmove 7g7f ponder 3c3d", &mut record),
+            ReadState::Stop
+        ));
+        assert_eq!(record.m, shogi::Move::parse("7g7f").unwrap());
+        assert_eq!(record.ponder, shogi::Move::parse("3c3d"));
+    }
+
+    #[test]
+    fn ignores_unusable_ponder_move() {
+        let mut record = MoveRecord::default();
+
+        parse_search_output_line("bestmove 7g7f ponder resign", &mut record);
+
+        assert_eq!(record.ponder, None);
     }
 }

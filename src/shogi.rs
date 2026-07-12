@@ -989,7 +989,7 @@ impl GameOutcome {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Game {
     current_position: Position,
     moves: Vec<Move>,

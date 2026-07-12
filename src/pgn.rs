@@ -73,6 +73,20 @@ impl PgnWriter {
                 .time_control
                 .to_string(),
         )?;
+        Self::write_header(
+            f,
+            "BlackPonderMode",
+            &self.engine_options[ticket.engines[0]]
+                .ponder_mode
+                .to_string(),
+        )?;
+        Self::write_header(
+            f,
+            "WhitePonderMode",
+            &self.engine_options[ticket.engines[1]]
+                .ponder_mode
+                .to_string(),
+        )?;
 
         writeln!(f)?;
 

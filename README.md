@@ -105,8 +105,33 @@ shogitest.exe \
   - `option.NAME=VALUE`: Set engine-specific USI options.
   - `timemargin=MILLISECS`: Set time margin for exceeding time limit.
   - `restart=(on|off)`: Restart engine in between games, defaults to `off`.
+  - `ponder=(off|standard|early)`: Select the Ponder protocol for this engine. Defaults to `off`.
+    `standard` sends a clocked `go ponder` followed by a bare `ponderhit`. `early` sends a
+    clockless `go ponder` followed by a clocked `ponderhit`, matching ShogiHome's early-Ponder
+    extension. `on` is accepted as an alias for `standard`. Enabling either mode also sends
+    `setoption name USI_Ponder value true`. Early Ponder requires a Fischer, byoyomi, or movetime
+    time control because its `ponderhit` must carry clock arguments.
 
 You can only specify one time control. Multiple time controls do not stack.
+
+### Standard Ponder versus early Ponder
+
+Ponder mode is configured per engine, so the two protocols can be compared directly while colors
+are reversed normally between paired games. Engine-specific USI options such as
+`Stochastic_Ponder` remain separate from the match-runner protocol mode.
+
+```bash
+shogitest \
+    -engine cmd=early-engine ponder=early option.Stochastic_Ponder=true \
+    -engine cmd=standard-engine ponder=standard option.Stochastic_Ponder=true \
+    -each tc=600+2 \
+    -rounds 200 -concurrency 4 \
+    -openings file=openings.sfen.epd
+```
+
+On a Ponder miss, Shogitest sends `stop`, consumes the stopped search's `bestmove`, and only then
+starts a normal search from the actual position. Ponder time is not charged to the engine clock;
+the measured move time begins at `ponderhit`, or before stopping a missed Ponder.
 
 ### Adjudication
 

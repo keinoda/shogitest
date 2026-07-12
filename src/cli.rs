@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use crate::engine;
 use crate::tc;
@@ -141,12 +141,42 @@ impl Default for CliOptions {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub enum PonderMode {
+    #[default]
+    Off,
+    Standard,
+    Early,
+}
+
+impl PonderMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "off" | "false" => Some(Self::Off),
+            "on" | "true" | "standard" => Some(Self::Standard),
+            "early" => Some(Self::Early),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for PonderMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Off => write!(f, "off"),
+            Self::Standard => write!(f, "standard"),
+            Self::Early => write!(f, "early"),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct EngineOptions {
     pub builder: engine::EngineBuilder,
     pub time_control: tc::TimeControl,
     pub time_margin: Duration,
     pub restart: bool,
+    pub ponder_mode: PonderMode,
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +267,15 @@ fn parse_engine_option(engine: &mut EngineOptions, name: &str, value: &str) -> b
                 return false;
             }
         },
+        "ponder" => match PonderMode::parse(value) {
+            Some(mode) => engine.ponder_mode = mode,
+            None => {
+                eprintln!(
+                    "Invalid value {value} for engine ponder option (expected off, standard, or early)"
+                );
+                return false;
+            }
+        },
         "proto" => match value {
             "usi" => {}
             _ => {
@@ -258,6 +297,32 @@ fn parse_engine_option(engine: &mut EngineOptions, name: &str, value: &str) -> b
     true
 }
 
+fn apply_ponder_engine_options(engine: &mut EngineOptions) {
+    if engine.ponder_mode == PonderMode::Off {
+        return;
+    }
+
+    let ponder_is_enabled = engine
+        .builder
+        .get_usi_option_value("USI_Ponder")
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    if !ponder_is_enabled {
+        engine
+            .builder
+            .usi_options
+            .push(("USI_Ponder".to_string(), "true".to_string()));
+    }
+}
+
+fn has_early_ponder_clock(engine: &EngineOptions) -> bool {
+    matches!(
+        engine.time_control,
+        tc::TimeControl::MoveTime(_)
+            | tc::TimeControl::Byoyomi { .. }
+            | tc::TimeControl::Fischer { .. }
+    )
+}
+
 pub fn parse() -> Option<CliOptions> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -268,7 +333,7 @@ pub fn parse() -> Option<CliOptions> {
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "-version" | "--version" => {
-                println!("Shogitest version 0.1.2");
+                println!("Shogitest version 0.1.3");
                 return None;
             }
 
@@ -690,10 +755,89 @@ pub fn parse() -> Option<CliOptions> {
         }
     }
 
+    for engine in &mut options.engines {
+        apply_ponder_engine_options(engine);
+        if engine.ponder_mode == PonderMode::Early && !has_early_ponder_clock(engine) {
+            eprintln!(
+                "Early ponder requires a clock-based time control (Fischer, byoyomi, or movetime)"
+            );
+            return None;
+        }
+    }
+
     if options.sprt.is_some() && options.engines.len() != 2 {
         eprintln!("SPRT can only be done on two engines");
         return None;
     }
 
     Some(options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_engine_ponder_modes() {
+        let mut engine = EngineOptions::default();
+
+        assert!(parse_engine_option(&mut engine, "ponder", "standard"));
+        assert_eq!(engine.ponder_mode, PonderMode::Standard);
+
+        assert!(parse_engine_option(&mut engine, "ponder", "early"));
+        assert_eq!(engine.ponder_mode, PonderMode::Early);
+
+        assert!(parse_engine_option(&mut engine, "ponder", "off"));
+        assert_eq!(engine.ponder_mode, PonderMode::Off);
+
+        assert!(!parse_engine_option(&mut engine, "ponder", "invalid"));
+    }
+
+    #[test]
+    fn enabling_ponder_adds_the_usi_option() {
+        let mut engine = EngineOptions {
+            ponder_mode: PonderMode::Early,
+            ..EngineOptions::default()
+        };
+
+        apply_ponder_engine_options(&mut engine);
+
+        assert_eq!(
+            engine.builder.get_usi_option_value("USI_Ponder"),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn enabling_ponder_overrides_an_explicit_false_usi_option() {
+        let mut engine = EngineOptions {
+            ponder_mode: PonderMode::Standard,
+            ..EngineOptions::default()
+        };
+        engine
+            .builder
+            .usi_options
+            .push(("USI_Ponder".to_string(), "false".to_string()));
+
+        apply_ponder_engine_options(&mut engine);
+
+        assert_eq!(
+            engine.builder.get_usi_option_value("USI_Ponder"),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn early_ponder_requires_clock_arguments_for_ponderhit() {
+        let mut engine = EngineOptions {
+            ponder_mode: PonderMode::Early,
+            ..EngineOptions::default()
+        };
+
+        assert!(!has_early_ponder_clock(&engine));
+        engine.time_control = tc::TimeControl::Nodes(1000);
+        assert!(!has_early_ponder_clock(&engine));
+        engine.time_control = tc::TimeControl::MoveTime(Duration::from_secs(1));
+        assert!(has_early_ponder_clock(&engine));
+    }
 }

@@ -119,6 +119,7 @@ impl StatsWrapper {
         let (nelo, nelo_diff) = penta.normalized_elo();
 
         let tc = compare(|i| self.engine_options[i].time_control.to_string());
+        let ponder = compare(|i| self.engine_options[i].ponder_mode.to_string());
         let threads = compare(|i| {
             self.engine_options[i]
                 .builder
@@ -141,7 +142,7 @@ impl StatsWrapper {
             .unwrap_or("null".to_string());
 
         println!(
-            "Results of {} vs {} (score for {}) ({tc}, {threads}, {hash}, {book}):",
+            "Results of {} vs {} (score for {}) ({tc}, ponder={ponder}, {threads}, {hash}, {book}):",
             self.engine_names[0], self.engine_names[1], self.engine_names[0]
         );
         println!("Elo: {lelo:.2} +/- {lelo_diff:.2}, nElo: {nelo:.2} +/- {nelo_diff:.2}");
