@@ -1,4 +1,4 @@
-use std::{fmt, time::Duration};
+use std::{collections::HashSet, fmt, time::Duration};
 
 use crate::engine;
 use crate::tc;
@@ -103,6 +103,7 @@ pub struct CliOptions {
     pub games: Option<u64>,
     pub rounds: u64,
     pub concurrency: u64,
+    pub cpu_affinity: Option<Vec<usize>>,
     pub rand_seed: Option<u64>,
     pub meta: MetaDataOptions,
     pub pgn: Option<PgnOutOptions>,
@@ -128,6 +129,7 @@ impl Default for CliOptions {
             games: None,
             rounds: 2,
             concurrency: 1,
+            cpu_affinity: None,
             rand_seed: None,
             meta: MetaDataOptions {
                 event_name: String::from("?"),
@@ -177,6 +179,15 @@ pub struct EngineOptions {
     pub time_margin: Duration,
     pub restart: bool,
     pub ponder_mode: PonderMode,
+}
+
+impl EngineOptions {
+    pub fn thread_count(&self) -> Option<usize> {
+        self.builder
+            .get_usi_option_value("Threads")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -323,6 +334,126 @@ fn has_early_ponder_clock(engine: &EngineOptions) -> bool {
     )
 }
 
+fn parse_cpu_list(value: &str) -> Result<Vec<usize>, String> {
+    let mut cpus = Vec::new();
+    let mut seen = HashSet::new();
+
+    if value.is_empty() {
+        return Err("CPU affinity list must not be empty".to_string());
+    }
+
+    for part in value.split(',') {
+        if part.is_empty() {
+            return Err(format!(
+                "Invalid empty CPU entry in affinity list {value:?}"
+            ));
+        }
+
+        let (start, end) = match part.split_once('-') {
+            Some((start, end)) => {
+                let start = start
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid CPU range {part:?}"))?;
+                let end = end
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid CPU range {part:?}"))?;
+                if start > end {
+                    return Err(format!("CPU range must be ascending: {part:?}"));
+                }
+                (start, end)
+            }
+            None => {
+                let cpu = part
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid CPU number {part:?}"))?;
+                (cpu, cpu)
+            }
+        };
+
+        for cpu in start..=end {
+            #[cfg(target_os = "linux")]
+            if cpu >= libc::CPU_SETSIZE as usize {
+                return Err(format!(
+                    "CPU {cpu} exceeds the Linux CPU affinity limit {}",
+                    libc::CPU_SETSIZE
+                ));
+            }
+            if !seen.insert(cpu) {
+                return Err(format!("CPU {cpu} is duplicated in the affinity list"));
+            }
+            cpus.push(cpu);
+        }
+    }
+
+    Ok(cpus)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn validate_cpu_affinity(options: &CliOptions) -> Result<(), String> {
+    if options.cpu_affinity.is_none() {
+        return Ok(());
+    }
+    Err("-cpu-affinity is supported only on Linux".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_cpu_affinity(options: &CliOptions) -> Result<(), String> {
+    let Some(cpus) = options.cpu_affinity.as_ref() else {
+        return Ok(());
+    };
+    let mut allowed_set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    if unsafe {
+        libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut allowed_set)
+    } != 0
+    {
+        return Err(format!(
+            "Unable to read the process CPU affinity: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut seen = HashSet::new();
+    for cpu in cpus {
+        if !seen.insert(*cpu) {
+            return Err(format!("CPU {cpu} is duplicated in the affinity list"));
+        }
+        if !unsafe { libc::CPU_ISSET(*cpu, &allowed_set) } {
+            return Err(format!(
+                "CPU {cpu} is not available in the shogitest process affinity"
+            ));
+        }
+    }
+
+    let mut threads_per_game = 0usize;
+    for (index, engine) in options.engines.iter().enumerate() {
+        let threads = engine.thread_count().ok_or_else(|| {
+            format!(
+                "Engine {} must specify option.Threads as a positive integer when -cpu-affinity is used",
+                index + 1
+            )
+        })?;
+        threads_per_game = threads_per_game
+            .checked_add(threads)
+            .ok_or_else(|| "Engine thread count overflow".to_string())?;
+    }
+
+    let concurrency = usize::try_from(options.concurrency)
+        .map_err(|_| "Concurrency does not fit in usize".to_string())?;
+    let required = threads_per_game
+        .checked_mul(concurrency)
+        .ok_or_else(|| "CPU affinity requirement overflow".to_string())?;
+    if cpus.len() != required {
+        return Err(format!(
+            "-cpu-affinity provides {} CPUs, but {} are required (concurrency {} x {} engine threads per game)",
+            cpus.len(),
+            required,
+            concurrency,
+            threads_per_game
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn parse() -> Option<CliOptions> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -333,7 +464,7 @@ pub fn parse() -> Option<CliOptions> {
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "-version" | "--version" => {
-                println!("Shogitest version 0.1.3");
+                println!("Shogitest version 0.1.4");
                 return None;
             }
 
@@ -453,6 +584,20 @@ pub fn parse() -> Option<CliOptions> {
                 } else {
                     eprintln!("invalid concurrency value {option} (must be unsigned integer)");
                     return None;
+                }
+            }
+
+            "-cpu-affinity" => {
+                let Some(value) = it.next() else {
+                    eprintln!("No value for -cpu-affinity");
+                    return None;
+                };
+                match parse_cpu_list(value) {
+                    Ok(cpus) => options.cpu_affinity = Some(cpus),
+                    Err(err) => {
+                        eprintln!("Invalid -cpu-affinity value: {err}");
+                        return None;
+                    }
                 }
             }
 
@@ -765,6 +910,11 @@ pub fn parse() -> Option<CliOptions> {
         }
     }
 
+    if let Err(err) = validate_cpu_affinity(&options) {
+        eprintln!("Invalid CPU affinity configuration: {err}");
+        return None;
+    }
+
     if options.sprt.is_some() && options.engines.len() != 2 {
         eprintln!("SPRT can only be done on two engines");
         return None;
@@ -839,5 +989,58 @@ mod tests {
         assert!(!has_early_ponder_clock(&engine));
         engine.time_control = tc::TimeControl::MoveTime(Duration::from_secs(1));
         assert!(has_early_ponder_clock(&engine));
+    }
+
+    #[test]
+    fn parses_cpu_ranges_without_reordering_them() {
+        assert_eq!(parse_cpu_list("4,1-3,8").unwrap(), vec![4, 1, 2, 3, 8]);
+    }
+
+    #[test]
+    fn rejects_duplicate_and_descending_cpu_ranges() {
+        assert!(parse_cpu_list("1,1").unwrap_err().contains("duplicated"));
+        assert!(parse_cpu_list("4-2").unwrap_err().contains("ascending"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn validates_exact_cpu_count_for_all_engines_and_slots() {
+        let mut allowed_set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe {
+                libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut allowed_set)
+            },
+            0
+        );
+        let cpus: Vec<_> = (0..libc::CPU_SETSIZE as usize)
+            .filter(|cpu| unsafe { libc::CPU_ISSET(*cpu, &allowed_set) })
+            .take(6)
+            .collect();
+        if cpus.len() < 6 {
+            return;
+        }
+
+        let engine = |threads: &str| {
+            let mut engine = EngineOptions::default();
+            engine
+                .builder
+                .usi_options
+                .push(("Threads".to_string(), threads.to_string()));
+            engine
+        };
+        let mut options = CliOptions {
+            engines: vec![engine("2"), engine("1")],
+            concurrency: 2,
+            cpu_affinity: Some(cpus),
+            ..CliOptions::default()
+        };
+
+        assert!(validate_cpu_affinity(&options).is_ok());
+        options.cpu_affinity.as_mut().unwrap().pop();
+        assert!(
+            validate_cpu_affinity(&options)
+                .unwrap_err()
+                .contains("6 are required")
+        );
     }
 }

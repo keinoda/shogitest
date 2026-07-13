@@ -56,6 +56,10 @@ shogitest.exe \
 
     Play N games concurrently. Default value is `1`.
 
+- `-cpu-affinity CPULIST`: On Linux, pin every engine process to a disjoint CPU set. The list
+  must contain exactly `concurrency * sum(engine Threads)` CPUs. CPU ranges such as `0-7` are
+  accepted. Every engine must explicitly set `option.Threads` when this flag is used.
+
 - `-rounds N`
 
     Play N rounds. All games within the round use the same opening. If left unspecified, the default value is infinite. Must be non-zero.
@@ -125,13 +129,15 @@ shogitest \
     -engine cmd=early-engine ponder=early option.Stochastic_Ponder=true \
     -engine cmd=standard-engine ponder=standard option.Stochastic_Ponder=true \
     -each tc=600+2 \
-    -rounds 200 -concurrency 4 \
+    -rounds 200 -concurrency 4 -cpu-affinity 0-7 \
     -openings file=openings.sfen.epd
 ```
 
 On a Ponder miss, Shogitest sends `stop`, consumes the stopped search's `bestmove`, and only then
 starts a normal search from the actual position. Ponder time is not charged to the engine clock;
 the measured move time begins at `ponderhit`, or before stopping a missed Ponder.
+For strength or time-allocation comparisons, use `-cpu-affinity` so that the normal search and the
+opponent's Ponder search never share a logical CPU.
 
 ### Adjudication
 

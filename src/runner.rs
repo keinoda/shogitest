@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 pub struct Runner {
     engines: Vec<cli::EngineOptions>,
     concurrency: u64,
+    cpu_affinity: Option<Vec<usize>>,
     adjudication: cli::AdjudicationOptions,
     report_interval: Option<u64>,
 }
@@ -25,12 +26,14 @@ impl Runner {
     pub fn new(
         engines: Vec<cli::EngineOptions>,
         concurrency: u64,
+        cpu_affinity: Option<Vec<usize>>,
         adjudication: cli::AdjudicationOptions,
         report_interval: Option<u64>,
     ) -> Runner {
         Runner {
             engines,
             concurrency,
+            cpu_affinity,
             adjudication,
             report_interval,
         }
@@ -48,9 +51,17 @@ impl Runner {
             let recv_ticket = recv_ticket.clone();
             let send_result = send_result.clone();
             let engines = self.engines.clone();
+            let cpu_affinity = self.cpu_affinity.clone();
             let adjudication = self.adjudication.clone();
             thread_handles.push(thread::spawn(move || {
-                runner_thread_main(engines, adjudication, i, recv_ticket, send_result);
+                runner_thread_main(
+                    engines,
+                    cpu_affinity,
+                    adjudication,
+                    i,
+                    recv_ticket,
+                    send_result,
+                );
             }));
         }
 
@@ -110,14 +121,22 @@ impl Runner {
 
 fn runner_thread_main(
     engine_options: Vec<cli::EngineOptions>,
+    cpu_affinity: Option<Vec<usize>>,
     adjudication: cli::AdjudicationOptions,
     thread_index: u64,
     recv: crossbeam_channel::Receiver<Option<MatchTicket>>,
     send: crossbeam_channel::Sender<MatchResult>,
 ) {
+    let affinities = engine_affinities(&engine_options, thread_index, cpu_affinity.as_deref());
     let mut engines: Vec<_> = engine_options
         .iter()
-        .map(|o| o.builder.init().unwrap())
+        .zip(affinities.iter())
+        .map(|(options, affinity)| {
+            options
+                .builder
+                .init_with_affinity(affinity.as_deref())
+                .unwrap()
+        })
         .collect();
 
     while let Some(ticket) = recv.recv().unwrap() {
@@ -129,6 +148,36 @@ fn runner_thread_main(
         info!("Thread {thread_index} sending result: {:?}", &result);
         send.send(result).unwrap();
     }
+}
+
+fn engine_affinities(
+    engine_options: &[cli::EngineOptions],
+    thread_index: u64,
+    cpu_affinity: Option<&[usize]>,
+) -> Vec<Option<Vec<usize>>> {
+    let Some(cpus) = cpu_affinity else {
+        return vec![None; engine_options.len()];
+    };
+
+    let thread_counts: Vec<_> = engine_options
+        .iter()
+        .map(|engine| {
+            engine
+                .thread_count()
+                .expect("CPU affinity was validated before starting the runner")
+        })
+        .collect();
+    let threads_per_game: usize = thread_counts.iter().sum();
+    let mut offset = usize::try_from(thread_index).unwrap() * threads_per_game;
+
+    thread_counts
+        .into_iter()
+        .map(|thread_count| {
+            let affinity = cpus[offset..offset + thread_count].to_vec();
+            offset += thread_count;
+            Some(affinity)
+        })
+        .collect()
 }
 
 fn do_adjudication(
@@ -735,6 +784,29 @@ mod tests {
     #[test]
     fn disables_ponder_commands_by_default() {
         assert_eq!(ponder_go_command(PonderMode::Off, "btime 1000"), None);
+    }
+
+    #[test]
+    fn partitions_affinity_by_runner_slot_and_engine_threads() {
+        let engine = |threads: &str| {
+            let mut options = engine_options(PonderMode::Early);
+            options
+                .builder
+                .usi_options
+                .push(("Threads".to_string(), threads.to_string()));
+            options
+        };
+        let options = [engine("2"), engine("1")];
+        let cpus = [10, 11, 12, 20, 21, 22];
+
+        assert_eq!(
+            engine_affinities(&options, 0, Some(&cpus)),
+            vec![Some(vec![10, 11]), Some(vec![12])]
+        );
+        assert_eq!(
+            engine_affinities(&options, 1, Some(&cpus)),
+            vec![Some(vec![20, 21]), Some(vec![22])]
+        );
     }
 
     #[test]

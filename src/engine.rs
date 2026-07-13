@@ -1,5 +1,7 @@
 use crate::shogi;
 use log::{error, info, trace};
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 use std::{
     io::{Result, Write},
     path::Path,
@@ -57,16 +59,31 @@ pub struct EngineBuilder {
 
 impl EngineBuilder {
     pub fn init(&self) -> Result<Engine> {
+        self.init_with_affinity(None)
+    }
+
+    pub fn init_with_affinity(&self, cpu_affinity: Option<&[usize]>) -> Result<Engine> {
         let cmd = if self.dir.is_empty() {
             Path::new(&self.cmd).to_path_buf()
         } else {
             Path::new(&self.dir).join(&self.cmd)
         };
 
-        let mut child = Command::new(&cmd)
-            .stdout(Stdio::piped())
-            .stdin(Stdio::piped())
-            .spawn()?;
+        let mut command = Command::new(&cmd);
+        command.stdout(Stdio::piped()).stdin(Stdio::piped());
+        if let Some(cpus) = cpu_affinity {
+            configure_cpu_affinity(&mut command, cpus)?;
+        }
+        let mut child = command.spawn().map_err(|err| {
+            std::io::Error::new(
+                err.kind(),
+                format!(
+                    "Failed to start engine {} with CPU affinity {:?}: {err}",
+                    cmd.display(),
+                    cpu_affinity
+                ),
+            )
+        })?;
 
         let stdout = child.stdout.take().unwrap();
         let stdin = child.stdin.take().unwrap();
@@ -78,6 +95,7 @@ impl EngineBuilder {
             stdin,
             name: self.name.clone().unwrap_or(self.cmd.to_string()),
             builder: self.clone(),
+            cpu_affinity: cpu_affinity.map(<[_]>::to_vec),
         };
 
         engine.write_line("usi")?;
@@ -145,6 +163,50 @@ impl EngineBuilder {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn configure_cpu_affinity(command: &mut Command, cpus: &[usize]) -> Result<()> {
+    if cpus.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Engine CPU affinity must not be empty",
+        ));
+    }
+    if let Some(cpu) = cpus
+        .iter()
+        .copied()
+        .find(|cpu| *cpu >= libc::CPU_SETSIZE as usize)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("CPU {cpu} exceeds Linux CPU_SETSIZE {}", libc::CPU_SETSIZE),
+        ));
+    }
+
+    let cpus = cpus.to_vec();
+    unsafe {
+        command.pre_exec(move || {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            libc::CPU_ZERO(&mut set);
+            for cpu in &cpus {
+                libc::CPU_SET(*cpu, &mut set);
+            }
+            if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_cpu_affinity(_command: &mut Command, _cpus: &[usize]) -> Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Engine CPU affinity is supported only on Linux",
+    ))
+}
+
 #[derive(Debug)]
 pub struct Engine {
     child: Child,
@@ -153,6 +215,7 @@ pub struct Engine {
     stdin: ChildStdin,
     name: String,
     builder: EngineBuilder,
+    cpu_affinity: Option<Vec<usize>>,
 }
 
 impl Drop for Engine {
@@ -184,7 +247,9 @@ impl Engine {
     }
 
     pub fn restart(&mut self) -> Result<()> {
-        *self = self.builder.init()?;
+        let builder = self.builder.clone();
+        let cpu_affinity = self.cpu_affinity.clone();
+        *self = builder.init_with_affinity(cpu_affinity.as_deref())?;
         Ok(())
     }
 
@@ -523,6 +588,79 @@ fn parse_search_output_line(line: &str, mr: &mut MoveRecord) -> ReadState {
             ReadState::Stop
         }
         _ => ReadState::Continue,
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod affinity_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn first_allowed_cpu() -> usize {
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        let result =
+            unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) };
+        assert_eq!(result, 0);
+        (0..libc::CPU_SETSIZE as usize)
+            .find(|cpu| unsafe { libc::CPU_ISSET(*cpu, &set) })
+            .expect("test process has no allowed CPU")
+    }
+
+    #[test]
+    fn pins_child_before_exec() {
+        let cpu = first_allowed_cpu();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "grep '^Cpus_allowed_list:' /proc/self/status"]);
+        configure_cpu_affinity(&mut command, &[cpu]).unwrap();
+
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let actual = stdout.split_once(':').unwrap().1.trim();
+        assert_eq!(actual, cpu.to_string());
+    }
+
+    fn process_allowed_list(pid: u32) -> String {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn preserves_affinity_when_restarting_an_engine() {
+        let cpu = first_allowed_cpu();
+        let script_path = std::env::temp_dir().join(format!(
+            "shogitest-affinity-engine-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(
+            &script_path,
+            "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    usi) echo 'id name affinity-test'; echo usiok ;;\n    quit) exit 0 ;;\n  esac\ndone\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script_path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&script_path, permissions).unwrap();
+
+        let builder = EngineBuilder {
+            cmd: script_path.to_string_lossy().into_owned(),
+            ..EngineBuilder::default()
+        };
+        let mut engine = builder.init_with_affinity(Some(&[cpu])).unwrap();
+        let first_pid = engine.child.id();
+        assert_eq!(process_allowed_list(first_pid), cpu.to_string());
+
+        engine.restart().unwrap();
+        assert_ne!(engine.child.id(), first_pid);
+        assert_eq!(process_allowed_list(engine.child.id()), cpu.to_string());
+
+        drop(engine);
+        std::fs::remove_file(script_path).unwrap();
     }
 }
 

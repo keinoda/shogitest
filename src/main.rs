@@ -78,6 +78,7 @@ fn main() -> std::io::Result<()> {
     let r = runner::Runner::new(
         cli_options.engines,
         cli_options.concurrency,
+        cli_options.cpu_affinity,
         cli_options.adjudication,
         cli_options.report_interval,
     );
