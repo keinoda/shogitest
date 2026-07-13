@@ -193,6 +193,30 @@ impl EngineTime {
         }
     }
 
+    pub fn after_elapsed(mut self, elapsed: Duration) -> EngineTime {
+        match self.tc {
+            TimeControl::None | TimeControl::Nodes(_) => {}
+            TimeControl::MoveTime(duration) => {
+                self.tc = TimeControl::MoveTime(duration.saturating_sub(elapsed));
+            }
+            TimeControl::Byoyomi { base, byoyomi } => {
+                let elapsed_in_byoyomi = elapsed.saturating_sub(self.remaining);
+                self.remaining = self.remaining.saturating_sub(elapsed);
+                self.tc = TimeControl::Byoyomi {
+                    base,
+                    byoyomi: byoyomi.saturating_sub(elapsed_in_byoyomi),
+                };
+            }
+            TimeControl::Fischer {
+                base: _,
+                increment: _,
+            } => {
+                self.remaining = self.remaining.saturating_sub(elapsed);
+            }
+        }
+        self
+    }
+
     pub fn step(&mut self, duration: Duration) -> StepResult {
         match self.tc {
             TimeControl::None | TimeControl::Nodes(_) => StepResult::Ok,
@@ -219,9 +243,10 @@ impl EngineTime {
                 }
             }
             TimeControl::Fischer { base: _, increment } => {
-                if self.remaining < duration {
+                let remaining = self.remaining;
+                if remaining < duration {
                     self.remaining = Duration::ZERO;
-                    if self.remaining + self.time_margin < duration {
+                    if remaining + self.time_margin < duration {
                         return StepResult::TimeElapsed;
                     }
                 } else {
@@ -290,4 +315,77 @@ pub fn to_usi_string(color: Color, sente_time: &EngineTime, gote_time: &EngineTi
     };
 
     stm_part + &nstm_part
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fischer_margin_uses_remaining_time_before_zeroing_clock() {
+        let tc = TimeControl::Fischer {
+            base: Duration::from_secs(1),
+            increment: Duration::ZERO,
+        };
+
+        let mut within_margin = EngineTime::new(tc, Duration::from_millis(250));
+        assert_eq!(
+            within_margin.step(Duration::from_millis(1200)),
+            StepResult::Ok
+        );
+        assert_eq!(within_margin.remaining(), Some(Duration::ZERO));
+
+        let mut outside_margin = EngineTime::new(tc, Duration::from_millis(250));
+        assert_eq!(
+            outside_margin.step(Duration::from_millis(1251)),
+            StepResult::TimeElapsed
+        );
+    }
+
+    #[test]
+    fn elapsed_before_search_reduces_fischer_clock_without_adding_increment() {
+        let clock = EngineTime::new(
+            TimeControl::Fischer {
+                base: Duration::from_secs(2),
+                increment: Duration::from_secs(1),
+            },
+            Duration::from_millis(250),
+        )
+        .after_elapsed(Duration::from_millis(400));
+
+        assert_eq!(clock.remaining(), Some(Duration::from_millis(2600)));
+        assert_eq!(clock.bestmove_timeout(), Some(Duration::from_millis(3900)));
+    }
+
+    #[test]
+    fn elapsed_before_search_reduces_current_byoyomi_only() {
+        let clock = EngineTime::new(
+            TimeControl::Byoyomi {
+                base: Duration::from_millis(100),
+                byoyomi: Duration::from_millis(500),
+            },
+            Duration::from_millis(250),
+        )
+        .after_elapsed(Duration::from_millis(300));
+
+        assert_eq!(clock.remaining(), Some(Duration::ZERO));
+        assert_eq!(
+            to_usi_string(Color::Sente, &clock, &clock),
+            "btime 0 byoyomi 300 wtime 0"
+        );
+    }
+
+    #[test]
+    fn elapsed_before_search_reduces_movetime() {
+        let clock = EngineTime::new(
+            TimeControl::MoveTime(Duration::from_millis(500)),
+            Duration::from_millis(250),
+        )
+        .after_elapsed(Duration::from_millis(125));
+
+        assert_eq!(
+            to_usi_string(Color::Gote, &clock, &clock),
+            "wtime 0 byoyomi 375"
+        );
+    }
 }

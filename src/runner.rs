@@ -342,6 +342,19 @@ fn ponder_hit_command(mode: PonderMode, time_arguments: &str) -> String {
     }
 }
 
+fn search_timing_after_elapsed(
+    engine_time: &[tc::EngineTime; 2],
+    stm: shogi::Color,
+    elapsed: Duration,
+) -> (String, Option<Duration>) {
+    let mut adjusted_time = *engine_time;
+    adjusted_time[stm.to_index()] = adjusted_time[stm.to_index()].after_elapsed(elapsed);
+    (
+        tc::to_usi_string(stm, &adjusted_time[0], &adjusted_time[1]),
+        adjusted_time[stm.to_index()].bestmove_timeout(),
+    )
+}
+
 fn stop_ponder<E: MatchEngine>(
     engine: &mut E,
     stm: shogi::Color,
@@ -499,11 +512,10 @@ fn run_match<E: MatchEngine>(
         let color_index = stm.to_index();
         let engine_index = ticket.engines[color_index];
         let ponder_mode = engine_options[engine_index].ponder_mode;
-        let bestmove_timeout = engine_time[stm.to_index()].bestmove_timeout();
-        let time_arguments = tc::to_usi_string(stm, &engine_time[0], &engine_time[1]);
 
-        // TODO: Improve time measurement here
         let now = Instant::now();
+        let (mut time_arguments, mut bestmove_timeout) =
+            search_timing_after_elapsed(&engine_time, stm, Duration::ZERO);
         let mut search_started_by_ponderhit = false;
         let mut restart_current_on_finish = false;
         if let Some(ponder_state) = ponder_states[color_index].take() {
@@ -543,6 +555,9 @@ fn run_match<E: MatchEngine>(
                         restart_current_on_finish = true;
                     }
                 }
+
+                (time_arguments, bestmove_timeout) =
+                    search_timing_after_elapsed(&engine_time, stm, now.elapsed());
             }
         }
 
@@ -807,6 +822,32 @@ mod tests {
             engine_affinities(&options, 1, Some(&cpus)),
             vec![Some(vec![20, 21]), Some(vec![22])]
         );
+    }
+
+    #[test]
+    fn subtracts_ponder_miss_stop_time_from_search_clock() {
+        let clocks = [
+            tc::EngineTime::new(
+                tc::TimeControl::Fischer {
+                    base: Duration::from_secs(2),
+                    increment: Duration::from_secs(1),
+                },
+                Duration::from_millis(250),
+            ),
+            tc::EngineTime::new(
+                tc::TimeControl::Fischer {
+                    base: Duration::from_secs(2),
+                    increment: Duration::from_secs(1),
+                },
+                Duration::from_millis(250),
+            ),
+        ];
+
+        let (arguments, timeout) =
+            search_timing_after_elapsed(&clocks, shogi::Color::Sente, Duration::from_millis(400));
+
+        assert_eq!(arguments, "btime 2600 binc 1000 wtime 3000 winc 1000");
+        assert_eq!(timeout, Some(Duration::from_millis(3900)));
     }
 
     #[test]
