@@ -1,0 +1,4 @@
+# shogitest は nightly feature (#![feature(...)]) を使うため nightly が必須。
+# tatara の pin と同一 nightly に揃え、同一マシンでの toolchain 追加取得を不要にする。
+[toolchain]
+channel = "nightly-2026-04-03"
